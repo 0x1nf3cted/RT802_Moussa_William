@@ -7,9 +7,10 @@ Déroulement du protocole :
   1. Souscrire à rt0806/srv/cert, rt0806/auth/<cid>/ready
      et rt0806/products/<cid>.
   2. À réception du certificat serveur (retained) :
+       - Vérifier qu'il est signé par la CA locale.
        - Extraire la clé publique RSA.
        - Générer une clé AES-256 aléatoire.
-       - Envelopper la clé AES avec RSA-OAEP-SHA1.
+       - Envelopper la clé AES avec RSA-OAEP-SHA256.
        - Publier la clé enveloppée sur rt0806/auth/<cid>.
   3. Attendre l'accusé de réception du serveur (rt0806/auth/<cid>/ready).
   4. Recevoir et déchiffrer le catalogue sur rt0806/products/<cid>.
@@ -17,6 +18,7 @@ Déroulement du protocole :
      la commande chiffrée sur rt0806/order/<cid>.
 """
 
+import os
 import json
 import time
 import uuid
@@ -30,16 +32,21 @@ import paho.mqtt.client as mqtt
 from core import (
     COURTIER, PORT,
     T_CERTIFICAT, T_AUTH, T_PRET, T_PRODUITS, T_COMMANDE,
-    certificat_depuis_b64, envelopper_cle, chiffrer, dechiffrer, CryptoErreur,
+    envelopper_cle, chiffrer, dechiffrer, CryptoErreur,
 )
+from pki import ErreurPKI, certificat_depuis_b64, charger_certificat, verifier_certificat_serveur
 
+_REPERTOIRE = os.path.dirname(os.path.abspath(__file__))
+_REPERTOIRE_PKI = os.getenv("PKI_DIR", _REPERTOIRE)
+CHEMIN_CERT_CA = os.path.join(_REPERTOIRE_PKI, "ca_cert.pem")
 ID_CLIENT = f"c-{uuid.uuid4().hex[:8]}"
 
 
 class ClientBoutique:
 
-    def __init__(self, adresse_livraison: str):
+    def __init__(self, adresse_livraison: str, id_article_auto: int | None = None):
         self._adresse   = adresse_livraison
+        self._id_article_auto = id_article_auto
         self._cle_aes: bytes | None = None
         self._catalogue: list | None = None
 
@@ -104,6 +111,8 @@ class ClientBoutique:
     def _etablir_session(self, cert_b64: str):
         try:
             certificat      = certificat_depuis_b64(cert_b64)
+            cert_ca         = charger_certificat(CHEMIN_CERT_CA)
+            verifier_certificat_serveur(certificat, cert_ca)
             self._cle_aes   = secrets.token_bytes(32)
             cle_enveloppee  = envelopper_cle(certificat.public_key(), self._cle_aes)
             self._mq.publish(
@@ -113,9 +122,11 @@ class ClientBoutique:
                     "cle_enveloppee":  base64.b64encode(cle_enveloppee).decode(),
                 }),
             )
-            self._journaliser("Handshake envoyé | clé AES-256 enveloppée RSA-OAEP")
-        except CryptoErreur as exc:
+            self._journaliser("Handshake envoyé | certificat vérifié, clé AES-256 enveloppée RSA-OAEP-SHA256")
+        except (ErreurPKI, FileNotFoundError) as exc:
             self._journaliser(f"Handshake rejeté | certificat invalide : {exc}")
+        except CryptoErreur as exc:
+            self._journaliser(f"Handshake rejeté | erreur crypto : {exc}")
         except Exception as exc:
             self._journaliser(f"Erreur inattendue lors du handshake : {exc}")
 
@@ -146,11 +157,15 @@ class ClientBoutique:
         for article in self._catalogue:
             print(f"  [{article['id']}] {article['ref']}  {article['libelle']}  |  {article['prix']} €  (stock : {article['stock']})")
 
-        saisie = input("\nID de l'article à commander : ").strip()
-        try:
-            id_article = int(saisie)
-        except ValueError as exc:
-            raise ValueError("Identifiant d'article invalide") from exc
+        if self._id_article_auto is None:
+            saisie = input("\nID de l'article à commander : ").strip()
+            try:
+                id_article = int(saisie)
+            except ValueError as exc:
+                raise ValueError("Identifiant d'article invalide") from exc
+        else:
+            id_article = self._id_article_auto
+            self._journaliser(f"Sélection automatique de l'article {id_article}")
 
         article = next((a for a in self._catalogue if a["id"] == id_article), None)
         if not article:
@@ -174,8 +189,14 @@ if __name__ == "__main__":
     analyseur = argparse.ArgumentParser(description="Client RT0806 | boutique sécurisée MQTT")
     analyseur.add_argument(
         "--adresse",
-        default="9 rue des Crayères, 51100 Reims",
+        default=os.getenv("CLIENT_ADRESSE", "9 rue des Crayères, 51100 Reims"),
         help="Adresse de livraison",
     )
+    analyseur.add_argument(
+        "--article-id",
+        type=int,
+        default=int(os.getenv("CLIENT_ARTICLE_ID")) if os.getenv("CLIENT_ARTICLE_ID") else None,
+        help="ID d'article à commander automatiquement",
+    )
     args = analyseur.parse_args()
-    ClientBoutique(args.adresse).demarrer()
+    ClientBoutique(args.adresse, args.article_id).demarrer()

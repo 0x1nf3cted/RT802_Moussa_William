@@ -5,8 +5,8 @@ un broker MQTT. La sécurité repose sur trois mécanismes complémentaires :
 
 | Mécanisme | Algorithme | Rôle |
 |-----------|-----------|------|
-| Authentification serveur | X.509 auto-signé (RSA-2048 / SHA-256) | Prouver l'identité du serveur |
-| Établissement de session | RSA-OAEP-SHA1 | Transmettre la clé AES de façon confidentielle |
+| Authentification serveur | CA locale + certificat serveur X.509 signé (RSA-3072 / SHA-256) | Prouver l'identité du serveur |
+| Établissement de session | RSA-OAEP-SHA256 | Transmettre la clé AES de façon confidentielle |
 | Échanges applicatifs | AES-256-CBC + SHA-1 | Chiffrement et intégrité des messages |
 
 ---
@@ -30,31 +30,50 @@ aucun outil en ligne de commande (`mosquitto_pub`/`mosquitto_sub`) n'est requis.
 
 ## Prérequis
 
+Broker MQTT via Docker Compose :
 ```bash
-pip install cryptography paho-mqtt
+docker compose version
 ```
 
-Broker Mosquitto installé localement (`mosquitto` dans le PATH).
+Dépendances Python pour le serveur et le client :
+```bash
+python3 -m pip install -r requirements.txt
+```
 
 ---
 
 ## Lancement
 
-**Terminal 1 | broker**
+**Terminal 1 | broker MQTT avec Docker**
 ```bash
-mosquitto
+docker compose up
 ```
 
-**Terminal 2 | serveur**
+**Terminal 2 | serveur Python local**
 ```bash
-python server.py
+python3 server.py
 ```
 
-**Terminal 3 | client**
+Au premier démarrage, le serveur génère la CA locale et le certificat serveur.
+
+**Terminal 3 | client Python local**
 ```bash
-python client.py
-# ou avec une adresse de livraison personnalisée :
-python client.py --address "42 avenue de la République, 69003 Lyon"
+python3 client.py
+```
+
+Avec une adresse de livraison personnalisée :
+```bash
+python3 client.py --adresse "42 avenue de la République, 69003 Lyon"
+```
+
+Commande automatique d'un article :
+```bash
+python3 client.py --article-id 3
+```
+
+**Arrêt du broker**
+```bash
+docker compose down
 ```
 
 ---
@@ -65,6 +84,9 @@ python client.py --address "42 avenue de la République, 69003 Lyon"
 |----------|--------|-------------|
 | `MQTT_BROKER` | `127.0.0.1` | Adresse IP du broker |
 | `MQTT_PORT` | `1883` | Port TCP du broker |
+| `PKI_DIR` | dossier du script | Dossier contenant la CA et le certificat serveur |
+| `CLIENT_ARTICLE_ID` | vide | ID d'article à commander automatiquement |
+| `CLIENT_ADRESSE` | `9 rue des Crayères, 51100 Reims` | Adresse de livraison du client |
 
 ---
 
@@ -72,8 +94,10 @@ python client.py --address "42 avenue de la République, 69003 Lyon"
 
 | Fichier | Contenu |
 |---------|---------|
-| `server_priv.pem` | Clé privée RSA-2048 (PEM TraditionalOpenSSL) |
-| `server_cert.pem` | Certificat X.509 auto-signé (validité 365 jours) |
+| `ca_priv.pem` | Clé privée de la CA locale |
+| `ca_cert.pem` | Certificat public de la CA locale |
+| `server_priv.pem` | Clé privée RSA du serveur |
+| `server_cert.pem` | Certificat serveur signé par la CA locale |
 
 ---
 

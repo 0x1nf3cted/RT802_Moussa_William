@@ -4,7 +4,7 @@
 server.py | RT0806 : serveur de la boutique sécurisée.
 
 Séquence de démarrage :
-  1. Générer (ou recharger) la paire RSA-2048 et le certificat X.509 auto-signé.
+  1. Générer (ou recharger) la CA locale et le certificat serveur signé.
   2. Se connecter au courtier MQTT via paho-mqtt.
   3. Publier le certificat (PEM base64, retained) sur rt0806/srv/cert.
   4. À chaque demande d'établissement de session (rt0806/auth/<cid>) :
@@ -25,14 +25,16 @@ import paho.mqtt.client as mqtt
 from core import (
     COURTIER, PORT,
     T_CERTIFICAT, T_AUTH, T_PRET, T_PRODUITS, T_COMMANDE,
-    generer_paire_rsa, creer_certificat_auto_signe,
-    sauvegarder_cle_privee, charger_cle_privee, sauvegarder_certificat,
     ouvrir_enveloppe_cle, chiffrer, dechiffrer, CryptoErreur,
 )
+from pki import charger_cle_privee, initialiser_pki_serveur
 
-_REPERTOIRE   = os.path.dirname(os.path.abspath(__file__))
-CHEMIN_CLE    = os.path.join(_REPERTOIRE, "server_priv.pem")
-CHEMIN_CERT   = os.path.join(_REPERTOIRE, "server_cert.pem")
+_REPERTOIRE = os.path.dirname(os.path.abspath(__file__))
+_REPERTOIRE_PKI = os.getenv("PKI_DIR", _REPERTOIRE)
+CHEMIN_CLE_CA = os.path.join(_REPERTOIRE_PKI, "ca_priv.pem")
+CHEMIN_CERT_CA = os.path.join(_REPERTOIRE_PKI, "ca_cert.pem")
+CHEMIN_CLE = os.path.join(_REPERTOIRE_PKI, "server_priv.pem")
+CHEMIN_CERT = os.path.join(_REPERTOIRE_PKI, "server_cert.pem")
 
 CATALOGUE = [
     {"id": 1, "ref": "RS-AU1", "libelle": "Audi RS6 Avant",        "prix": 125000.00, "stock": 5},
@@ -62,12 +64,17 @@ class ServeurBoutique:
     # ── Cycle de vie ─────────────────────────────────────────────────────────
 
     def _initialiser_identite(self):
-        if not os.path.exists(CHEMIN_CLE) or not os.path.exists(CHEMIN_CERT):
-            cle_privee, _ = generer_paire_rsa()
-            certificat    = creer_certificat_auto_signe(cle_privee)
-            sauvegarder_cle_privee(cle_privee, CHEMIN_CLE)
-            sauvegarder_certificat(certificat, CHEMIN_CERT)
-            self._journaliser("Paire RSA-2048 + certificat X.509 auto-signé générés")
+        os.makedirs(_REPERTOIRE_PKI, exist_ok=True)
+        ca_creee, cert_cree = initialiser_pki_serveur(
+            CHEMIN_CLE_CA,
+            CHEMIN_CERT_CA,
+            CHEMIN_CLE,
+            CHEMIN_CERT,
+        )
+        if ca_creee:
+            self._journaliser("CA locale générée (ca_priv.pem + ca_cert.pem)")
+        if cert_cree:
+            self._journaliser("Certificat serveur signé par la CA locale généré")
 
     def demarrer(self):
         self._journaliser(f"Connexion au courtier {COURTIER}:{PORT}")
@@ -123,10 +130,10 @@ class ServeurBoutique:
             self._mq.publish(T_PRET.format(cid=cid), json.dumps({"accordee": True}))
             self._mq.publish(T_PRODUITS.format(cid=cid), chiffrer(cle_aes, {"articles": CATALOGUE}))
             self._journaliser(f"Catalogue chiffré envoyé à {cid}")
-        except (json.JSONDecodeError, KeyError, ValueError) as exc:
-            self._journaliser(f"Auth invalide/corrompue : {exc}")
         except CryptoErreur as exc:
             self._journaliser(f"Auth rejetée : {exc}")
+        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            self._journaliser(f"Auth invalide/corrompue : {exc}")
         except Exception as exc:
             self._journaliser(f"Erreur inattendue lors de l'authentification : {exc}")
 
