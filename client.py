@@ -39,6 +39,7 @@ from pki import ErreurPKI, certificat_depuis_b64, charger_certificat, verifier_c
 _REPERTOIRE = os.path.dirname(os.path.abspath(__file__))
 _REPERTOIRE_PKI = os.getenv("PKI_DIR", _REPERTOIRE)
 CHEMIN_CERT_CA = os.path.join(_REPERTOIRE_PKI, "ca_cert.pem")
+# Identifiant court mais unique pour isoler les topics MQTT de chaque client.
 ID_CLIENT = f"c-{uuid.uuid4().hex[:8]}"
 
 
@@ -50,6 +51,7 @@ class ClientBoutique:
         self._cle_aes: bytes | None = None
         self._catalogue: list | None = None
 
+        # Les callbacks MQTT tournent dans un thread paho ; ces événements synchronisent le flux principal.
         self._session_etablie  = threading.Event()
         self._catalogue_pret   = threading.Event()
 
@@ -67,6 +69,7 @@ class ClientBoutique:
     def demarrer(self):
         self._journaliser(f"Connexion au courtier {COURTIER}:{PORT} (identifiant : {ID_CLIENT})")
         self._mq.connect(COURTIER, PORT, keepalive=60)
+        # loop_start laisse le programme continuer pendant que paho écoute les messages en arrière-plan.
         self._mq.loop_start()
         try:
             self._passer_commande()
@@ -114,6 +117,7 @@ class ClientBoutique:
             cert_ca         = charger_certificat(CHEMIN_CERT_CA)
             verifier_certificat_serveur(certificat, cert_ca)
             self._cle_aes   = secrets.token_bytes(32)
+            # La clé AES est générée côté client puis protégée avec la clé publique du serveur.
             cle_enveloppee  = envelopper_cle(certificat.public_key(), self._cle_aes)
             self._mq.publish(
                 T_AUTH.format(cid=ID_CLIENT),
@@ -150,6 +154,7 @@ class ClientBoutique:
     # ── Saisie et envoi de commande ───────────────────────────────────────────
 
     def _passer_commande(self):
+        # On attend le catalogue avant de demander un choix, sinon l'utilisateur commanderait à l'aveugle.
         if not self._catalogue_pret.wait(timeout=30):
             raise TimeoutError("Délai dépassé | aucun catalogue reçu du serveur")
 

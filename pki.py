@@ -29,6 +29,7 @@ NOM_SERVEUR_DEFAUT = "rt0806.local"
 
 def generer_paire_rsa(taille: int = TAILLE_RSA_DEFAUT):
     """Génère et retourne (clé_privée, clé_publique) RSA."""
+    # 65537 est l'exposant public standard recommandé pour RSA.
     cle_privee = rsa.generate_private_key(public_exponent=65537, key_size=taille)
     return cle_privee, cle_privee.public_key()
 
@@ -45,6 +46,7 @@ def creer_certificat_ca(cle_ca, nom_commun: str = NOM_CA_DEFAUT):
         .serial_number(x509.random_serial_number())
         .not_valid_before(maintenant)
         .not_valid_after(maintenant + datetime.timedelta(days=3650))
+        # BasicConstraints.ca=True rend explicite que ce certificat peut signer d'autres certificats.
         .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
         .add_extension(
             x509.KeyUsage(
@@ -76,6 +78,7 @@ def creer_certificat_serveur(cle_serveur, cle_ca, cert_ca, nom_commun: str = NOM
         .serial_number(x509.random_serial_number())
         .not_valid_before(maintenant)
         .not_valid_after(maintenant + datetime.timedelta(days=825))
+        # Le certificat serveur n'est pas une CA : il sert seulement à s'authentifier et chiffrer la clé AES.
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(
             x509.KeyUsage(
@@ -110,11 +113,13 @@ def initialiser_pki_serveur(chemin_cle_ca: str, chemin_cert_ca: str, chemin_cle_
     cert_serveur_cree = False
 
     try:
+        # On réutilise la CA si sa clé privée et son certificat correspondent encore.
         cle_ca = charger_cle_privee(chemin_cle_ca)
         cert_ca = charger_certificat(chemin_cert_ca)
         if not _certificat_ca_valide(cert_ca, cle_ca):
             raise ErreurPKI("CA locale invalide ou incohérente")
     except (FileNotFoundError, ValueError, ErreurPKI):
+        # Si un fichier manque ou est corrompu, on repart sur une CA locale propre.
         cle_ca, _ = generer_paire_rsa()
         cert_ca = creer_certificat_ca(cle_ca)
         sauvegarder_cle_privee(cle_ca, chemin_cle_ca)
@@ -232,6 +237,7 @@ def _certificat_ca_valide(cert_ca, cle_ca) -> bool:
 
 
 def _periode_validite(cert):
+    # Les versions récentes de cryptography exposent des dates déjà timezone-aware.
     if hasattr(cert, "not_valid_before_utc") and hasattr(cert, "not_valid_after_utc"):
         return cert.not_valid_before_utc, cert.not_valid_after_utc
     return (

@@ -30,6 +30,7 @@ from core import (
 from pki import charger_cle_privee, initialiser_pki_serveur
 
 _REPERTOIRE = os.path.dirname(os.path.abspath(__file__))
+# PKI_DIR permet de partager les certificats avec Docker sans changer le code.
 _REPERTOIRE_PKI = os.getenv("PKI_DIR", _REPERTOIRE)
 CHEMIN_CLE_CA = os.path.join(_REPERTOIRE_PKI, "ca_priv.pem")
 CHEMIN_CERT_CA = os.path.join(_REPERTOIRE_PKI, "ca_cert.pem")
@@ -50,6 +51,7 @@ class ServeurBoutique:
     def __init__(self):
         self._initialiser_identite()
         self._cle_privee = charger_cle_privee(CHEMIN_CLE)
+        # Association cid -> clé AES de session, utilisée pour chiffrer les réponses.
         self._sessions: dict[str, bytes] = {}
 
         self._mq = mqtt.Client(
@@ -113,6 +115,7 @@ class ServeurBoutique:
     def _publier_certificat(self):
         with open(CHEMIN_CERT, "rb") as f:
             cert_b64 = base64.b64encode(f.read()).decode()
+        # Le retain garantit qu'un client arrivé plus tard reçoit le certificat.
         self._mq.publish(T_CERTIFICAT, cert_b64, retain=True)
         self._journaliser(f"Certificat publié (retained) sur {T_CERTIFICAT}")
 
@@ -124,6 +127,7 @@ class ServeurBoutique:
             cle_aes      = ouvrir_enveloppe_cle(self._cle_privee, cle_env)
             if len(cle_aes) != 32:
                 raise CryptoErreur("Clé de session invalide | 32 octets attendus")
+            # La clé AES ne circule jamais en clair : elle arrive enveloppée en RSA.
             self._sessions[cid] = cle_aes
             self._journaliser(f"Session établie pour {cid}")
 
@@ -146,6 +150,7 @@ class ServeurBoutique:
             self._journaliser(f"Commande reçue d'une session inconnue : {cid}")
             return
         try:
+            # Chaque commande doit être déchiffrable avec la clé négociée pour ce cid.
             commande = dechiffrer(cle_aes, contenu)
             self._journaliser(f"Commande reçue de {cid} : {json.dumps(commande, ensure_ascii=False)}")
         except CryptoErreur as exc:
